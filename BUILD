@@ -99,3 +99,7 @@ py_runtime(
         "@bazel_tools//tools/python:PY3": "/usr/bin/python3",
     }),
 )
+
+# Add special target for static-analysis enabled builds
+load("@rules_coverity//coverity:defs.bzl","cov_gen_script")
+cov_gen_script(name="coverity-target", deps=["all_extensions"])
