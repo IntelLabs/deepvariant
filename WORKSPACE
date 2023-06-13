@@ -3,6 +3,16 @@
 # if it is unique.
 workspace(name = "com_google_deepvariant")
 
+# Enable Coverity
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+http_archive(
+    name="rules_coverity",
+    urls=["file:///opt/coverity/analysis/2023.3.0/bazel/rules_coverity.tar.gz"],
+)
+
+load("@rules_coverity//coverity:repositories.bzl", "rules_coverity_toolchains")
+rules_coverity_toolchains()
+
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 # Note: absl_py and com_google_absl (the Python and C++ abseil libraries) are
