@@ -23,3 +23,7 @@ fi
   ${DV_COPT_FLAGS} \
   --build_python_zip \
   :coverity-target
+#Analyze files
+#cov-analyze --dir tmp --concurrency --security --rule --enable-constraint-fpp --enable-fnptr 
+#Format results as html
+#cov-format-errors --dir tmp --html-output html-dir
