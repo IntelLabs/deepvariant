@@ -16,7 +16,7 @@ if ! bazel; then
 fi
 
 # shellcheck disable=SC2086
-bazel build -c opt \
+ cov-build --dir tmp -bazel ~/bin/bazel build -c opt \
   --output_filter=DONT_MATCH_ANYTHING \
   --noshow_loading_progress \
   --show_result=0 \
