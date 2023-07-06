@@ -54,6 +54,11 @@ void ProcessSingleSiteCallTfRecords(
     const std::vector<nucleus::genomics::v1::ContigInfo>& contigs,
     const std::vector<std::string>& tfrecord_paths,
     const string& output_tfrecord_path);
+void GroupSingleSiteCallTfRecords(
+    const std::vector<nucleus::genomics::v1::ContigInfo>& contigs,
+    const std::vector<std::string>& tfrecord_paths,
+    const string& output_tfrecord_path,
+    const int num_chunks);
 
 }  // namespace deepvariant
 }  // namespace genomics

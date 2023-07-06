@@ -74,6 +74,10 @@ _READS = flags.DEFINE_string(
 _OUTPUT_VCF = flags.DEFINE_string(
     'output_vcf', None, 'Required. Path where we should write VCF file.')
 # Optional flags.
+_PCL_OPT = flags.DEFINE_boolean(
+    'pcl_opt', False,
+    'Optional. If True, apply PCL optimizations')
+
 _DRY_RUN = flags.DEFINE_boolean(
     'dry_run', False,
     'Optional. If True, only prints out commands without executing them.')
@@ -305,6 +309,48 @@ def call_variants_command(outfile, examples, model_ckpt, extra_args):
     logfile = '{}/call_variants.log'.format(_LOGGING_DIR.value)
   return (' '.join(command), logfile)
 
+def parallel_postprocess_variants_command(ref,
+                                 infile,
+                                 outfile,
+                                 extra_args,
+                                 nonvariant_site_tfrecord_path=None,
+                                 gvcf_outfile=None,
+                                 vcf_stats_report=True,
+                                 sample_name=None):
+  """Returns a postprocess_variants (command, logfile) for subprocess."""
+  #command = ['time', '/opt/deepvariant/bin/postprocess_variants']
+  command = [
+      'time', 'seq 0 {} |'.format(_NUM_SHARDS.value - 1),
+      'parallel -q --halt 2 --line-buffer', '/opt/deepvariant/bin/postprocess_variants'
+  ]
+  command.extend(['--ref', '"{}"'.format(ref)])
+
+  directory_name = os.path.dirname(os.path.normpath(outfile))
+  infile = directory_name + "/test_cvo_output"
+
+  command.extend(['--infile', '"{}"'.format(infile)])
+  command.extend(['--outfile', '"{}"'.format(outfile)])
+  if nonvariant_site_tfrecord_path is not None:
+    command.extend([
+        '--nonvariant_site_tfrecord_path',
+        '"{}"'.format(nonvariant_site_tfrecord_path)
+    ])
+  if gvcf_outfile is not None:
+    command.extend(['--gvcf_outfile', '"{}"'.format(gvcf_outfile)])
+  if not vcf_stats_report:
+    command.extend(['--novcf_stats_report'])
+  if sample_name is not None:
+    command.extend(['--sample_name', '"{}"'.format(sample_name)])
+    
+  command.extend(['--pp_tid {}'])
+
+  # Extend the command with all items in extra_args.
+  command = _extend_command_by_args_dict(command,
+                                         _extra_args_to_dict(extra_args))
+  logfile = None
+  if _LOGGING_DIR.value:
+    logfile = '{}/postprocess_variants.log'.format(_LOGGING_DIR.value)
+  return (' '.join(command), logfile)
 
 def postprocess_variants_command(ref,
                                  infile,
@@ -330,6 +376,10 @@ def postprocess_variants_command(ref,
     command.extend(['--novcf_stats_report'])
   if sample_name is not None:
     command.extend(['--sample_name', '"{}"'.format(sample_name)])
+  if _PCL_OPT.value:
+    command.extend(['--num_chunks', '"{}"'.format(_NUM_SHARDS.value)])
+    command.extend(['--save_cvo'])
+
   # Extend the command with all items in extra_args.
   command = _extend_command_by_args_dict(command,
                                          _extra_args_to_dict(extra_args))
@@ -460,6 +510,17 @@ def create_all_commands_and_logfiles(intermediate_results_dir):
           vcf_stats_report=_VCF_STATS_REPORT.value,
           sample_name=_SAMPLE_NAME.value))
 
+  if _PCL_OPT.value:
+    commands.append(
+      parallel_postprocess_variants_command(
+          _REF.value,
+          call_variants_output,
+          _OUTPUT_VCF.value,
+          _POSTPROCESS_VARIANTS_EXTRA_ARGS.value,
+          nonvariant_site_tfrecord_path=nonvariant_site_tfrecord_path,
+          gvcf_outfile=_OUTPUT_GVCF.value,
+          vcf_stats_report=_VCF_STATS_REPORT.value,
+          sample_name=_SAMPLE_NAME.value))
   # runtime-by-region
   if _LOGGING_DIR.value and _RUNTIME_REPORT.value:
     commands.append(runtime_by_region_vis_command(runtime_by_region_path))
@@ -470,7 +531,7 @@ def create_all_commands_and_logfiles(intermediate_results_dir):
 def main(_):
   if _USE_HP_INFORMATION.value:
     raise NotImplementedError('The --use_hp_information flag has been '
-                              'deprecated. DeepVariant now phases internally '
+                             'deprecated. DeepVariant now phases internally '
                               'for PacBio mode.')
   if _VERSION.value:
     print('DeepVariant version {}'.format(DEEP_VARIANT_VERSION))

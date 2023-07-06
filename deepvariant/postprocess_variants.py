@@ -67,6 +67,13 @@ from third_party.nucleus.util.struct_utils import add_string_field
 
 FLAGS = flags.FLAGS
 
+flags.DEFINE_integer(
+    'pp_tid', -1,
+    'Optional. Task ID for parallel post processing')
+flags.DEFINE_integer(
+    'num_chunks', 2,
+    'Required. Number of sorted parallel chunks for output. ')
+flags.DEFINE_boolean('save_cvo', False, 'If True, only saves the call_variant_output in sorted and grouped format.')
 flags.DEFINE_string(
     'infile', None,
     'Required. Path(s) to CallVariantOutput protos in TFRecord format to '
@@ -1005,6 +1012,8 @@ def main(argv=()):
           '"{}".'.format(str(argv)), errors.CommandLineError)
     del argv  # Unused.
 
+
+
     if (not FLAGS.nonvariant_site_tfrecord_path) != (not FLAGS.gvcf_outfile):
       errors.log_and_raise(
           'gVCF creation requires both nonvariant_site_tfrecord_path and '
@@ -1015,6 +1024,13 @@ def main(argv=()):
       errors.log_and_raise(
           'debug_output_all_candidates=ALT is incompatible with the '
           'multiallelic model. Use INFO instead.', errors.CommandLineError)
+    if FLAGS.pp_tid >= 0:
+       FLAGS.infile = FLAGS.infile + "_" + str(FLAGS.pp_tid)
+       directory_name = os.path.dirname(os.path.normpath(FLAGS.outfile))
+       file_name = os.path.basename(os.path.normpath(FLAGS.outfile))
+       new_path_string = directory_name + "/" + str(FLAGS.pp_tid) + "_" + file_name
+       FLAGS.outfile = new_path_string
+       print("New file names", FLAGS.infile, FLAGS.outfile)
 
     proto_utils.uses_fast_cpp_protos_or_die()
     logging_level.set_from_flag()
@@ -1023,6 +1039,7 @@ def main(argv=()):
         FLAGS.ref, cache_size=_FASTA_CACHE_SIZE)
     contigs = fasta_reader.header.contigs
     sample_name = get_sample_name()
+    
     cvo_paths, cvo_record = get_cvo_paths_and_first_record()
 
     if cvo_record is None:
@@ -1031,6 +1048,15 @@ def main(argv=()):
     else:
       temp = tempfile.NamedTemporaryFile()
       start_time = time.time()
+      # PCL optimization
+      if FLAGS.save_cvo:
+        directory_name = os.path.dirname(os.path.normpath(FLAGS.outfile))
+        temp_cvo_out_path = directory_name + "/test_cvo_output"
+        print("Temp file path ", temp_cvo_out_path)
+        #postprocess_variants_lib.group_single_sites_tfrecords(contigs, cvo_paths, "/opt/test_cvo_output", 56)
+        postprocess_variants_lib.group_single_sites_tfrecords(contigs, cvo_paths, temp_cvo_out_path, FLAGS.num_chunks)
+        return;
+
       postprocess_variants_lib.process_single_sites_tfrecords(
           contigs, cvo_paths, temp.name)
 

@@ -51,7 +51,8 @@ from third_party.nucleus.protos import variants_pb2
 from third_party.nucleus.util import errors
 from third_party.nucleus.util import proto_utils
 from third_party.nucleus.util import variant_utils
-
+# For bf16
+from tensorflow.core.protobuf import rewriter_config_pb2 
 
 tf.compat.v1.disable_eager_execution()
 
@@ -87,7 +88,7 @@ flags.DEFINE_string(
     'Required. Path to the TensorFlow model checkpoint to use to evaluate '
     'candidate variant calls.')
 flags.DEFINE_integer(
-    'batch_size', 512,
+    'batch_size', 10240,
     'Number of candidate variant tensors to batch together during inference. '
     'Larger batches use more memory but are more computational efficient.')
 flags.DEFINE_integer('max_batches', None,
@@ -386,10 +387,19 @@ def call_variants(examples_filename,
     raise ValueError(
         'Unexpected execution_hardware={} value. Allowed values are {}'.format(
             execution_hardware, ','.join(_ALLOW_EXECUTION_HARDWARE)))
+
+
+
+  graph_options=tf.compat.v1.GraphOptions( 
+    rewrite_options=rewriter_config_pb2.RewriterConfig( 
+      auto_mixed_precision_onednn_bfloat16=rewriter_config_pb2.RewriterConfig.ON))      
+
+
   init_op = tf.group(tf.compat.v1.global_variables_initializer(),
                      tf.compat.v1.local_variables_initializer())
 
-  config = tf.compat.v1.ConfigProto()
+  config = tf.compat.v1.ConfigProto(graph_options=graph_options)
+  #config = tf.compat.v1.ConfigProto()
   if FLAGS.config_string is not None:
     text_format.Parse(FLAGS.config_string, config)
   if execution_hardware == 'cpu':

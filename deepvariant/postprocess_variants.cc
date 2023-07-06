@@ -28,7 +28,7 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
-
+#include <fstream>
 #include "deepvariant/postprocess_variants.h"
 
 #include "deepvariant/protos/deepvariant.pb.h"
@@ -64,8 +64,136 @@ void SortSingleSiteCalls(
                                               contig_name_to_pos_in_fasta);
             });
 }
+//PCL optimizations
+bool is_overlap(CallVariantsOutput v1, CallVariantsOutput v2){
+        // If from different chromosomes - non overlapping
+        if(v1.variant().reference_name() != v2.variant().reference_name()) return false;
+        // if interval ranges are disjoint
+        else if( v2.variant().start() > v1.variant().end()) return false;
+        else return true;
+
+}
+
+int64_t adjust_boundary(std::vector<CallVariantsOutput> &v, int64_t pos){
+        while(pos < v.size() && (pos + 1) < v.size() && is_overlap(v[pos], v[pos+1])){
+                pos++;
+        }
+        return pos + 1;
+}
+
+void get_safe_chunking_positions(std::vector<uint64_t> &positions, std::vector<CallVariantsOutput> &v, uint64_t num_chunks){
+        int64_t chunk_size = v.size() / num_chunks;
+        uint64_t start_pos = 0;
+        positions.push_back(0);
+        for(int64_t i = 1; i < num_chunks; i++){
+                positions.push_back(adjust_boundary(v, start_pos + chunk_size - 1));
+                start_pos = positions[i];
+        }
+}
 
 }  // namespace
+
+void GroupSingleSiteCallTfRecords(
+    const std::vector<nucleus::genomics::v1::ContigInfo>& contigs,
+    const std::vector<std::string>& tfrecord_paths,
+    const string& output_tfrecord_path,
+    const int num_chunks) {
+
+
+
+  std::vector<CallVariantsOutput> single_site_calls;
+  tensorflow::Env* env = tensorflow::Env::Default();
+
+  for (const string& tfrecord_path : tfrecord_paths)
+  {
+
+    std::unique_ptr<tensorflow::RandomAccessFile> read_file;
+
+    TF_CHECK_OK(env->NewRandomAccessFile(tfrecord_path, &read_file));
+
+    const char* const option = nucleus::EndsWith(tfrecord_path, ".gz")
+                                   ? tensorflow::io::compression::kGzip
+                                   : tensorflow::io::compression::kNone;
+
+    tensorflow::io::RecordReader reader(
+        read_file.get(),
+        tensorflow::io::RecordReaderOptions::CreateRecordReaderOptions(option));
+
+    uint64 offset = 0;
+    tensorflow::tstring data;
+    LOG(INFO) << "Read from: " << tfrecord_path;
+
+    while (reader.ReadRecord(&offset, &data).ok())
+    {
+      CallVariantsOutput single_site_call;
+      QCHECK(single_site_call.ParseFromArray(data.data(), data.length()))
+          << "Failed to parse CallVariantsOutput";
+      // Here we assume each variant has only 1 call.
+      QCHECK_EQ(single_site_call.variant().calls_size(), 1);
+      single_site_calls.push_back(single_site_call);
+    }
+    if (tfrecord_paths.size() > 1) {
+      LOG(INFO) << "Done reading: " << tfrecord_path
+                << ". #entries in single_site_calls = "
+                << single_site_calls.size();
+    }
+  }
+  LOG(INFO) << "Total #entries in single_site_calls = "
+            << std::to_string(single_site_calls.size());
+  VLOG(3) << "Start SortSingleSiteCalls";
+  SortSingleSiteCalls(contigs, &single_site_calls);
+  VLOG(3) << "Done SortSingleSiteCalls";
+
+  // positions for chunking
+  std::vector<uint64_t> positions;
+  get_safe_chunking_positions(positions, single_site_calls, num_chunks);
+
+  for(int chunk = 0; chunk < positions.size(); chunk++){
+        //std::cout<<positions[i]<<std::endl;
+        //std::cout<<"\n"<<chunk<<std::endl;
+        uint64_t start = positions[chunk];
+        uint64_t end;
+        if( chunk + 1 == positions.size()) end = single_site_calls.size();
+        else end = positions[chunk + 1];
+
+        std:string chunked_file_name = output_tfrecord_path + "_" + std::to_string(chunk);
+        std::unique_ptr<tensorflow::WritableFile> output_file;
+        TF_CHECK_OK(tensorflow::Env::Default()->NewWritableFile(chunked_file_name,
+                                                          &output_file));
+        tensorflow::io::RecordWriter output_writer(output_file.get());
+        for (int i = start; i < end; i++){
+                //std:: cout<< i << " ";
+                auto& single_site_call = single_site_calls[i];
+                tensorflow::Status writer_status =
+                output_writer.WriteRecord(single_site_call.SerializeAsString());
+                QCHECK(writer_status.ok())
+                << "Failed to write serialized proto to output_writer. "
+                << "Status = " << writer_status.error_message();
+        }
+  }
+
+  // Write sorted calls to output_tfrecord_path.
+/*
+
+  std::unique_ptr<tensorflow::WritableFile> output_file;
+  TF_CHECK_OK(tensorflow::Env::Default()->NewWritableFile(output_tfrecord_path,
+                                                          &output_file));
+  tensorflow::io::RecordWriter output_writer(output_file.get());
+//  for (const auto& single_site_call : single_site_calls) {
+  for (int i = 0;  i < single_site_calls.size(); i++) {
+        auto& single_site_call = single_site_calls[i];
+        tensorflow::Status writer_status =
+        output_writer.WriteRecord(single_site_call.SerializeAsString());
+    QCHECK(writer_status.ok())
+        << "Failed to write serialized proto to output_writer. "
+        << "Status = " << writer_status.error_message();
+
+  }
+
+  //TF_CHECK_OK(output_writer.Flush()) << "Failed to flush the output writer.";
+
+*/
+}
 
 void ProcessSingleSiteCallTfRecords(
     const std::vector<nucleus::genomics::v1::ContigInfo>& contigs,

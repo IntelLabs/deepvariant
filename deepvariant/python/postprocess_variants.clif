@@ -34,3 +34,7 @@ from "deepvariant/postprocess_variants.h":
     def `ProcessSingleSiteCallTfRecords` as process_single_sites_tfrecords(
         contigs: list<ContigInfo>, tfrecord_paths: list<str>,
         output_tfrecord_path: str)
+    def `GroupSingleSiteCallTfRecords` as group_single_sites_tfrecords(
+        contigs: list<ContigInfo>, tfrecord_paths: list<str>,
+        output_tfrecord_path: str,
+        num_chunks: int)
