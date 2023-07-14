@@ -465,8 +465,7 @@ def create_all_commands_and_logfiles(intermediate_results_dir):
 
   if _PCL_OPT.value:
     if _OUTPUT_GVCF.value is not None:
-      print("Warning: gvcf output is disabled to enable parallel post-processing.
-              To enable gvcf output, use --pcl_opt=False flag")
+      print("Warning: gvcf output is disabled to enable parallel post-processing. To enable gvcf output, use --pcl_opt=False flag")
     nonvariant_site_tfrecord_path = None  
 
   examples = os.path.join(
