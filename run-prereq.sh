@@ -108,6 +108,8 @@ echo "$(pip3 --version)"
 
 note_build_stage "Install python3 packages"
 
+# Package for reading cpuinfo - for checking AMX flag
+pip3 install "${PIP_ARGS[@]}" py-cpuinfo==0.2.3
 pip3 install "${PIP_ARGS[@]}" contextlib2
 pip3 install "${PIP_ARGS[@]}" etils typing_extensions importlib_resources
 pip3 install "${PIP_ARGS[@]}" 'enum34==1.1.8'
