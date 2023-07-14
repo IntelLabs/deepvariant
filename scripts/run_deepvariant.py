@@ -75,7 +75,7 @@ _OUTPUT_VCF = flags.DEFINE_string(
     'output_vcf', None, 'Required. Path where we should write VCF file.')
 # Optional flags.
 _PCL_OPT = flags.DEFINE_boolean(
-    'pcl_opt', False,
+    'pcl_opt', True,
     'Optional. If True, apply PCL optimizations')
 
 _DRY_RUN = flags.DEFINE_boolean(
@@ -330,13 +330,13 @@ def parallel_postprocess_variants_command(ref,
 
   command.extend(['--infile', '"{}"'.format(infile)])
   command.extend(['--outfile', '"{}"'.format(outfile)])
-  if nonvariant_site_tfrecord_path is not None:
-    command.extend([
-        '--nonvariant_site_tfrecord_path',
-        '"{}"'.format(nonvariant_site_tfrecord_path)
-    ])
-  if gvcf_outfile is not None:
-    command.extend(['--gvcf_outfile', '"{}"'.format(gvcf_outfile)])
+  #if nonvariant_site_tfrecord_path is not None:
+  #  command.extend([
+  #      '--nonvariant_site_tfrecord_path',
+  #      '"{}"'.format(nonvariant_site_tfrecord_path)
+  #  ])
+  #if gvcf_outfile is not None:
+  #  command.extend(['--gvcf_outfile', '"{}"'.format(gvcf_outfile)])
   if not vcf_stats_report:
     command.extend(['--novcf_stats_report'])
   if sample_name is not None:
@@ -365,13 +365,13 @@ def postprocess_variants_command(ref,
   command.extend(['--ref', '"{}"'.format(ref)])
   command.extend(['--infile', '"{}"'.format(infile)])
   command.extend(['--outfile', '"{}"'.format(outfile)])
-  if nonvariant_site_tfrecord_path is not None:
-    command.extend([
-        '--nonvariant_site_tfrecord_path',
-        '"{}"'.format(nonvariant_site_tfrecord_path)
-    ])
-  if gvcf_outfile is not None:
-    command.extend(['--gvcf_outfile', '"{}"'.format(gvcf_outfile)])
+  #if nonvariant_site_tfrecord_path is not None:
+  #  command.extend([
+  #      '--nonvariant_site_tfrecord_path',
+  #      '"{}"'.format(nonvariant_site_tfrecord_path)
+  #  ])
+  #if gvcf_outfile is not None:
+  #  command.extend(['--gvcf_outfile', '"{}"'.format(gvcf_outfile)])
   if not vcf_stats_report:
     command.extend(['--novcf_stats_report'])
   if sample_name is not None:
@@ -379,6 +379,14 @@ def postprocess_variants_command(ref,
   if _PCL_OPT.value:
     command.extend(['--num_chunks', '"{}"'.format(_NUM_SHARDS.value)])
     command.extend(['--save_cvo'])
+  else:
+    if nonvariant_site_tfrecord_path is not None:
+      command.extend([
+          '--nonvariant_site_tfrecord_path',
+          '"{}"'.format(nonvariant_site_tfrecord_path)
+      ])
+    if gvcf_outfile is not None:
+      command.extend(['--gvcf_outfile', '"{}"'.format(gvcf_outfile)])
 
   # Extend the command with all items in extra_args.
   command = _extend_command_by_args_dict(command,
@@ -454,6 +462,12 @@ def create_all_commands_and_logfiles(intermediate_results_dir):
     nonvariant_site_tfrecord_path = os.path.join(
         intermediate_results_dir,
         'gvcf.tfrecord@{}.gz'.format(_NUM_SHARDS.value))
+
+  if _PCL_OPT.value:
+    if _OUTPUT_GVCF.value is not None:
+      print("Warning: gvcf output is disabled to enable parallel post-processing.
+              To enable gvcf output, use --pcl_opt=False flag")
+    nonvariant_site_tfrecord_path = None  
 
   examples = os.path.join(
       intermediate_results_dir,
