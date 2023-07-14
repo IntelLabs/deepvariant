@@ -31,7 +31,7 @@
 import json
 import os
 import time
-
+import cpuinfo
 
 from absl import flags
 from absl import logging
@@ -388,18 +388,19 @@ def call_variants(examples_filename,
         'Unexpected execution_hardware={} value. Allowed values are {}'.format(
             execution_hardware, ','.join(_ALLOW_EXECUTION_HARDWARE)))
 
-
-
-  graph_options=tf.compat.v1.GraphOptions( 
-    rewrite_options=rewriter_config_pb2.RewriterConfig( 
-      auto_mixed_precision_onednn_bfloat16=rewriter_config_pb2.RewriterConfig.ON))      
-
-
   init_op = tf.group(tf.compat.v1.global_variables_initializer(),
                      tf.compat.v1.local_variables_initializer())
 
-  config = tf.compat.v1.ConfigProto(graph_options=graph_options)
-  #config = tf.compat.v1.ConfigProto()
+  # Check amx support is present, if yes, rewrite the model graph using mix_precision
+  info = cpuinfo.get_cpu_info()
+  if 'amx_bf16' in info['flags']:
+    graph_options=tf.compat.v1.GraphOptions(
+      rewrite_options=rewriter_config_pb2.RewriterConfig(
+        auto_mixed_precision_onednn_bfloat16=rewriter_config_pb2.RewriterConfig.ON))
+    config = tf.compat.v1.ConfigProto(graph_options=graph_options)
+  else:
+    config = tf.compat.v1.ConfigProto()
+  
   if FLAGS.config_string is not None:
     text_format.Parse(FLAGS.config_string, config)
   if execution_hardware == 'cpu':
