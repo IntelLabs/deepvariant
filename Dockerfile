@@ -36,10 +36,19 @@ ENV DV_GPU_BUILD=${DV_GPU_BUILD}
 # Copying DeepVariant source code
 COPY . /opt/deepvariant
 
+
 ARG VERSION
 ENV VERSION=${VERSION}
 
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    git  --reinstall ca-certificates
+WORKDIR /opt
+RUN git clone --recursive https://github.com/samtools/bcftools.git
+RUN git clone --recursive https://github.com/samtools/htslib.git
+
+
 WORKDIR /opt/deepvariant
+
 
 RUN echo "Acquire::http::proxy \"$http_proxy\";\n" \
          "Acquire::https::proxy \"$https_proxy\";" > "/etc/apt/apt.conf"

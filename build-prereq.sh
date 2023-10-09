@@ -51,8 +51,14 @@ note_build_stage "build-prereq.sh: Install development packages"
 
 # Need to wait for dpkg lock (see internal)
 wait_for_dpkg_lock
-sudo -H apt-get -qq -y install pkg-config zip g++ zlib1g-dev unzip curl git wget > /dev/null
+sudo -H apt-get -qq -y install pkg-config zip g++ zlib1g-dev unzip curl git wget libcurl4-gnutls-dev apt-utils  build-essential > /dev/null
 
+
+###################################################
+#bcftools
+cd ../bcftools && echo $PWD && sudo make install
+cd ../deepvariant
+###################################################
 
 ################################################################################
 # bazel
