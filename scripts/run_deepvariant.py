@@ -352,6 +352,24 @@ def parallel_postprocess_variants_command(ref,
     logfile = '{}/postprocess_variants.log'.format(_LOGGING_DIR.value)
   return (' '.join(command), logfile)
 
+
+#
+def concat_vcf(outfile):
+  """Returns a outfile with concatenated vcf output"""
+  command = [
+      'time'
+  ]
+  directory_name = os.path.dirname(os.path.normpath(outfile))
+  file_name = os.path.basename(os.path.normpath(outfile))
+
+  command.extend(['vcf_list=`ls -v "{}"/*_"{}"` && bcftools concat $vcf_list > "{}"'.format(directory_name, file_name, outfile)])
+
+  logfile = None
+  if _LOGGING_DIR.value:
+    logfile = '{}/vcf_merge.log'.format(_LOGGING_DIR.value)
+  return (' '.join(command), logfile)
+#---------
+
 def postprocess_variants_command(ref,
                                  infile,
                                  outfile,
@@ -534,6 +552,8 @@ def create_all_commands_and_logfiles(intermediate_results_dir):
           gvcf_outfile=_OUTPUT_GVCF.value,
           vcf_stats_report=_VCF_STATS_REPORT.value,
           sample_name=_SAMPLE_NAME.value))
+    commands.append(
+      concat_vcf(_OUTPUT_VCF.value))
   # runtime-by-region
   if _LOGGING_DIR.value and _RUNTIME_REPORT.value:
     commands.append(runtime_by_region_vis_command(runtime_by_region_path))
