@@ -1,3 +1,42 @@
+Open-Omics-DeepVariant is an accelerated version of Google's DeepVariant on modern CPUs. Open-Omics-DeepVariant accelerates the three main modules of DeepVariant by applying the following optimizations: 1. the design a scalable algorithm for Make\_Example module 2. Call-Varaint module using BFloat16 quantization for Intel's Advanced-Matrix-Extensions (AMX) and 3. Designed a parallel algorithm for Post-Process module. Our optimizations offer up to YYx speedup compared to the Google's open-sourced DeepVariant.
+ 
+## Installation
+Similar to Google's Deepvariant, we recommend Docker for running Intel-DeepVariant.
+ 
+### Clone the repo
+```
+git clone --recursive https://github.com/IntelLabs/deepvariant.git
+```
+ 
+### Build a Docker image (This one-time step should take ~30 mins)
+```
+cd deepvariant
+sudo docker build -t deepvariant .
+```
+ 
+### Run the pipeline
+```
+sudo docker run \
+  -v "YOUR_INPUT_DIR":"/input" \
+  -v "YOUR_OUTPUT_DIR:/output" \
+  deepvariant:latest \
+  /opt/deepvariant/bin/run_deepvariant \
+  --model_type=WGS \ **Replace this string with exactly one of the following [WGS,WES,PACBIO,ONT_R104,HYBRID_PACBIO_ILLUMINA]**
+  --ref=/input/YOUR_REF \
+  --reads=/input/YOUR_BAM \
+  --output_vcf=/output/YOUR_OUTPUT_VCF \
+  --output_gvcf=/output/YOUR_OUTPUT_GVCF \
+  --num_shards=$(nproc) \ **This will use all your cores to run make_examples. Feel free to change.**
+  --logging_dir=/output/logs \ **Optional. This saves the log output for each stage separately.
+  --dry_run=false **Default is false. If set to true, commands will be printed out but not executed.
+```
+ 
+Note that all optimizations are enabled by default. To run the Open-Omics-Deepvariant without any optimizations, provide a flag --pcl\_opt=False along with docker run command.
+ 
+---
+The original README content of DeepVariant follows.
+
+
 <img src="docs/images/dv_logo.png" width=50% height=50%>
 
 [![release](https://img.shields.io/badge/release-v1.5.0-green?logo=github)](https://github.com/google/deepvariant/releases)
