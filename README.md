@@ -1,7 +1,8 @@
-Open-Omics-DeepVariant is an accelerated version of Google's DeepVariant on modern CPUs. Open-Omics-DeepVariant accelerates the three main modules of DeepVariant by applying the following optimizations: 1. the design a scalable algorithm for Make\_Example module 2. Call-Varaint module using BFloat16 quantization for Intel's Advanced-Matrix-Extensions (AMX) and 3. Designed a parallel algorithm for Post-Process module. Our optimizations offer up to YYx speedup compared to the Google's open-sourced DeepVariant.
+# Open-Omics-DeepVaraint
+Open-Omics-DeepVariant is an accelerated version of Google's DeepVariant on modern CPUs. Open-Omics-DeepVariant accelerates the two main modules of DeepVariant: 1) The Call-Varaint module quantized using BFloat16 for Intel Advanced-Matrix-Extensions (AMX) and 2) A parallel algorithm for Post-Process module. Our optimizations offer up to YYx speedup compared to the Google's open-sourced DeepVariant.
  
 ## Installation
-Similar to Google's Deepvariant, we recommend Docker for running Intel-DeepVariant.
+Similar to Google's DeepVariant, we recommend using Docker for running Open-Omics-DeepVariant.
  
 ### Clone the repo
 ```
@@ -14,7 +15,7 @@ cd deepvariant
 sudo docker build -t deepvariant .
 ```
  
-### Run the pipeline
+### Run Open-Omics-DeepVariant using Docker
 ```
 sudo docker run \
   -v "YOUR_INPUT_DIR":"/input" \
@@ -31,7 +32,7 @@ sudo docker run \
   --dry_run=false **Default is false. If set to true, commands will be printed out but not executed.
 ```
  
-Note that all optimizations are enabled by default. To run the Open-Omics-Deepvariant without any optimizations, provide a flag **--pcl\_opt=False** along with docker run command.
+Note that all optimizations are enabled by default. To run the Open-Omics-DeepVariant without any optimizations, provide a flag **--pcl\_opt=False** along with docker run command.
  
 ---
 The original README content of DeepVariant follows.
