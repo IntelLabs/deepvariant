@@ -1,5 +1,5 @@
 # Open-Omics-DeepVariant
-Open-Omics-DeepVariant is an accelerated version of Google's DeepVariant on modern CPUs. Open-Omics-DeepVariant accelerates the two main modules of DeepVariant: 1) The Call-Variant module quantized using BFloat16 for Intel Advanced-Matrix-Extensions (AMX) and 2) A parallel algorithm for Post-Process module. Our optimizations offer up to YYx speedup compared to the Google's open-sourced DeepVariant.
+Open-Omics-DeepVariant is an accelerated version of Google's DeepVariant on modern CPUs. Open-Omics-DeepVariant accelerates the two main modules of DeepVariant: 1) The Call-Variant module quantized using BFloat16 for Intel Advanced-Matrix-Extensions (AMX) and 2) A parallel algorithm for Post-Process module. Our optimizations offer up to YYx speedup compared to the Google's open-sourced DeepVariant-v1.5.0.
  
 ## Installation
 Similar to Google's DeepVariant, we recommend using Docker for running Open-Omics-DeepVariant.
