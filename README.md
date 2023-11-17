@@ -12,12 +12,12 @@ git clone --recursive https://github.com/IntelLabs/deepvariant.git
 ### Build a Docker image (This one-time step should take ~30 mins)
 ```
 cd deepvariant
-sudo docker build -t deepvariant .
+docker build -t deepvariant .
 ```
  
 ### Run Open-Omics-DeepVariant using Docker
 ```
-sudo docker run \
+docker run \
   -v "YOUR_INPUT_DIR":"/input" \
   -v "YOUR_OUTPUT_DIR:/output" \
   deepvariant:latest \
