@@ -74,9 +74,9 @@ _READS = flags.DEFINE_string(
 _OUTPUT_VCF = flags.DEFINE_string(
     'output_vcf', None, 'Required. Path where we should write VCF file.')
 # Optional flags.
-_PCL_OPT = flags.DEFINE_boolean(
-    'pcl_opt', True,
-    'Optional. If True, apply PCL optimizations')
+_OO_OPT = flags.DEFINE_boolean(
+    'open_omics_opt', True,
+    'Optional. If True, apply Open-Omics optimizations')
 
 _DRY_RUN = flags.DEFINE_boolean(
     'dry_run', False,
@@ -394,7 +394,7 @@ def postprocess_variants_command(ref,
     command.extend(['--novcf_stats_report'])
   if sample_name is not None:
     command.extend(['--sample_name', '"{}"'.format(sample_name)])
-  if _PCL_OPT.value:
+  if _OO_OPT.value:
     command.extend(['--num_chunks', '"{}"'.format(_NUM_SHARDS.value)])
     command.extend(['--save_cvo'])
   else:
@@ -481,9 +481,9 @@ def create_all_commands_and_logfiles(intermediate_results_dir):
         intermediate_results_dir,
         'gvcf.tfrecord@{}.gz'.format(_NUM_SHARDS.value))
 
-  if _PCL_OPT.value:
+  if _OO_OPT.value:
     if _OUTPUT_GVCF.value is not None:
-      print("Warning: gvcf output is disabled to enable parallel post-processing. To enable gvcf output, use --pcl_opt=False flag")
+      print("Warning: gvcf output is disabled to enable parallel post-processing. To enable gvcf output, use --open_omics_opt=False flag")
     nonvariant_site_tfrecord_path = None  
 
   examples = os.path.join(
@@ -541,7 +541,7 @@ def create_all_commands_and_logfiles(intermediate_results_dir):
           vcf_stats_report=_VCF_STATS_REPORT.value,
           sample_name=_SAMPLE_NAME.value))
 
-  if _PCL_OPT.value:
+  if _OO_OPT.value:
     commands.append(
       parallel_postprocess_variants_command(
           _REF.value,

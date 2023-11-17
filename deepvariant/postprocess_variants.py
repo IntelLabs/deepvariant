@@ -1048,7 +1048,7 @@ def main(argv=()):
     else:
       temp = tempfile.NamedTemporaryFile()
       start_time = time.time()
-      # PCL optimization
+      # Open-Omics optimization
       if FLAGS.save_cvo:
         directory_name = os.path.dirname(os.path.normpath(FLAGS.outfile))
         temp_cvo_out_path = directory_name + "/test_cvo_output"

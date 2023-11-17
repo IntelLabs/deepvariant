@@ -32,7 +32,7 @@ docker run \
   --dry_run=false **Default is false. If set to true, commands will be printed out but not executed.
 ```
  
-Note that all optimizations are enabled by default. To run the Open-Omics-DeepVariant without any optimizations, provide a flag **--pcl\_opt=False** along with docker run command.
+Note that all optimizations are enabled by default. To run the Open-Omics-DeepVariant without any optimizations, provide a flag **--open\_omics\_opt=False** along with docker run command.
  
 ---
 The original README content of DeepVariant follows.

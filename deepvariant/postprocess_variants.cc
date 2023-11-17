@@ -64,7 +64,7 @@ void SortSingleSiteCalls(
                                               contig_name_to_pos_in_fasta);
             });
 }
-//PCL optimizations
+//Open-Omics optimizations
 bool is_overlap(CallVariantsOutput v1, CallVariantsOutput v2){
         // If from different chromosomes - non overlapping
         if(v1.variant().reference_name() != v2.variant().reference_name()) return false;
