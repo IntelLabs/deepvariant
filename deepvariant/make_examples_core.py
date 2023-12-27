@@ -27,13 +27,16 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 """Core functionality for step one of DeepVariant: Making examples."""
-
+import multiprocessing
+from functools import partial
+import pickle
 import collections
 import dataclasses
 import itertools
 import json
 import os
 import time
+import sys
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 
@@ -579,6 +582,41 @@ def regions_to_process(contigs,
                        task_id=None,
                        num_shards=None,
                        candidates=None):
+
+  if (task_id is None) != (num_shards is None):
+    raise ValueError('Both task_id and num_shards must be present if either is',
+                     task_id, num_shards)
+  if num_shards:
+    if num_shards < 0:
+      raise ValueError('num_shards={} must be >= 0'.format(num_shards))
+    if task_id < 0 or task_id >= num_shards:
+      raise ValueError('task_id={} should be >= 0 and < num_shards={}'.format(
+          task_id, num_shards))
+
+  regions = ranges.RangeSet.from_contigs(contigs)
+  if calling_regions:
+    regions = regions.intersection(calling_regions)
+
+  partitioned = []
+  # Depending on candidates parameter we choose the partitioning method.
+  if candidates is not None:
+    partitioned = partition_by_candidates(regions, candidates, 200)
+  else:
+    partitioned = regions.partition(partition_size)
+
+  if num_shards:
+    return (r for i, r in enumerate(partitioned) if i % num_shards == task_id)
+  else:
+    return partitioned
+
+
+
+def regions_to_process1(contigs,
+                       partition_size,
+                       calling_regions=None,
+                       task_id=None,
+                       num_shards=None,
+                       candidates=None):
   """Determines the regions to process and partitions them into pieces.
 
   This function divides the genomes into regions we should process by
@@ -620,6 +658,7 @@ def regions_to_process(contigs,
   Raises:
     ValueError: if task_id and num_shards are bad or inconsistent.
   """
+  print("num_shards",num_shards)
   if (task_id is None) != (num_shards is None):
     raise ValueError('Both task_id and num_shards must be present if either is',
                      task_id, num_shards)
@@ -635,14 +674,30 @@ def regions_to_process(contigs,
     regions = regions.intersection(calling_regions)
 
   partitioned = []
+  temp=[]
   # Depending on candidates parameter we choose the partitioning method.
   if candidates is not None:
     partitioned = partition_by_candidates(regions, candidates, 200)
+    temp = partition_by_candidates(regions, candidates, 200)
   else:
     partitioned = regions.partition(partition_size)
-
+    temp = regions.partition(partition_size)
+  count_num=0
+  #print("typeeeeeeeeeeeeeee",partitioned)
+  #for i, r in partitioned:
+  #  print(i)
+  #temp=partitioned
+  count_num=sum(1 for _ in temp)
+  #count_num=len(list(partitioned))
+  print("count_num:",count_num)
+  div=count_num/num_shards
+  #print("div:",div)
   if num_shards:
-    return (r for i, r in enumerate(partitioned) if i % num_shards == task_id)
+    #for i, r in enumerate(partitioned):
+    #print(i,r,task_id,count_num)
+    #  if int(i / div) == task_id:
+    #    print("new_task:",i,r,int(i / div),task_id)
+    return (r for i, r in enumerate(partitioned) if int(i / div) == task_id)
   else:
     return partitioned
 
@@ -1252,7 +1307,177 @@ class RegionProcessor(object):
       yield pos
     # Mark the end of partition
     yield END_OF_PARTITION
+  
+  def process0(self, region):
+    """Finds candidates and creates corresponding examples in a region.
 
+    Args:
+      region: A nucleus.genomics.v1.Range proto. Specifies the region on the
+        genome we should process.
+
+    Returns:
+      (candidates_by_sample, gvcfs_by_sample, runtimes)
+      1. candidates_by_sample: A dict keyed by sample role, each a list of
+      candidates found, which are deepvariant.DeepVariantCall objects.
+      2. gvcfs_by_sample: A dict keyed by sample, each a list of
+      nucleus.genomics.v1.Variant protos containing gVCF information for all
+      reference sites, if gvcf generation is enabled, otherwise this value is
+      [].
+      3. runtimes: A dict of runtimes in seconds keyed by stage.
+    """
+    runtimes = {}
+
+    if not self.initialized:
+      self.initialize()
+
+    before_get_reads = time.time()
+    runtimes['num reads'] = 0
+    # Collect reads from multiple BAMs. Each BAM contains a sample.
+    sample_reads_list = []
+    for sample in self.samples:
+      if sample.in_memory_sam_reader is not None:
+        # Realigner is called outside region_reads_norealign()
+        sample_reads = self.region_reads_norealign(
+            region=region,
+            sam_readers=sample.sam_readers,
+            reads_filenames=sample.options.reads_filenames)
+        runtimes['num reads'] += len(sample_reads)
+        sample_reads_list.append(sample_reads)
+      else:
+        sample_reads_list.append([])
+    if self.options.joint_realignment:
+      sample_reads_list = self.realign_reads_joint_multisample(
+          sample_reads_list, region)
+    else:
+      sample_reads_list = self.realign_reads_per_sample_multisample(
+          sample_reads_list, region)
+    for sample_index, sample in enumerate(self.samples):
+      sample.in_memory_sam_reader.replace_reads(sample_reads_list[sample_index])
+
+    #print("sample.in_memory_sam_reader.reads = ", sample.in_memory_sam_reader.reads)
+    runtimes['get reads'] = trim_runtime(time.time() - before_get_reads)
+    before_find_candidates = time.time()
+
+    # Region is expanded by region_padding number of bases. This functionality
+    # is only needed when phase_reads flag is on.
+    region_padding_percent = self.options.phase_reads_region_padding_pct
+    if self.options.phase_reads and region_padding_percent > 0:
+      contig_dict = ranges.contigs_dict(
+          fasta.IndexedFastaReader(
+              self.options.reference_filename).header.contigs)
+      # When candidate partitioning is used region size is variable. Therefore
+      # we need to calculate the padding for each region.
+      padding_fraction = int(
+          (region.end - region.start) * region_padding_percent / 100)
+      region_expanded = ranges.expand(region, padding_fraction, contig_dict)
+
+      filtered_candidates_by_sample, gvcfs_by_sample, unfiltered_candidates_by_sample = self.candidates_in_region0(
+          region, region_expanded)
+    else:
+      uiltered_candidates_by_sample, gvcfs_by_sample, unfiltered_candidates_by_sample = self.candidates_in_region0(region)
+
+    for sample in self.samples:
+      role = sample.options.role
+      if role not in filtered_candidates_by_sample:
+        continue
+      candidates = filtered_candidates_by_sample[role]
+
+      if self.options.select_variant_types:
+        candidates = list(
+            filter_candidates(candidates, self.options.select_variant_types))
+      runtimes['find candidates'] = trim_runtime(time.time() -
+                                                 before_find_candidates)
+      before_make_pileup_images = time.time()
+
+      # Get allele frequencies for candidates.
+      if self.options.use_allele_frequency:
+        candidates = list(
+            allele_frequency.add_allele_frequencies_to_candidates(
+                candidates=candidates,
+                population_vcf_reader=self.population_vcf_readers[
+                    region.reference_name],
+                ref_reader=self.ref_reader))
+
+      # After any filtering and other changes above, set candidates for sample.
+      #print("Role = ",role)
+      filtered_candidates_by_sample[role] = candidates
+
+      runtimes['make pileup images'] = trim_runtime(time.time() -
+                                                    before_make_pileup_images)
+    runtimes['num candidates'] = sum(
+        [len(x) for x in filtered_candidates_by_sample.values()])
+    #print("candidates_by_sample = ", candidates_by_sample)
+   return filtered_candidates_by_sample, gvcfs_by_sample, runtimes, unfiltered_candidates_by_sample
+
+
+  def process1(self, region, unfiltered_candidates):
+    """Finds candidates and creates corresponding examples in a region.
+
+    Args:
+      region: A nucleus.genomics.v1.Range proto. Specifies the region on the
+        genome we should process.
+
+    Returns:
+      (candidates_by_sample, gvcfs_by_sample, runtimes)
+      1. candidates_by_sample: A dict keyed by sample role, each a list of
+      candidates found, which are deepvariant.DeepVariantCall objects.
+      2. gvcfs_by_sample: A dict keyed by sample, each a list of
+      nucleus.genomics.v1.Variant protos containing gVCF information for all
+      reference sites, if gvcf generation is enabled, otherwise this value is
+      [].
+      3. runtimes: A dict of runtimes in seconds keyed by stage.
+    """
+    runtimes = {}
+
+    if not self.initialized:
+      self.initialize()
+
+    before_get_reads = time.time()
+    runtimes['num reads'] = 0
+    
+    #with open('sample.in_memory_sam_reader.pkl', 'rb') as input:
+    #  sample.in_memory_sam_reader=pickle.load(input)    
+    # Collect reads from multiple BAMs. Each BAM contains a sample.
+    sample_reads_list = []
+    for sample in self.samples:
+      if sample.in_memory_sam_reader is not None:
+        # Realigner is called outside region_reads_norealign()
+        sample_reads = self.region_reads_norealign(
+            region=region,
+            sam_readers=sample.sam_readers,
+            reads_filenames=sample.options.reads_filenames)
+        runtimes['num reads'] += len(sample_reads)
+        sample_reads_list.append(sample_reads)
+      else:
+        sample_reads_list.append([])
+    if self.options.joint_realignment:
+      sample_reads_list = self.realign_reads_joint_multisample(
+          sample_reads_list, region)
+    else:
+      sample_reads_list = self.realign_reads_per_sample_multisample(
+          sample_reads_list, region)
+    for sample_index, sample in enumerate(self.samples):
+      sample.in_memory_sam_reader.replace_reads(sample_reads_list[sample_index])
+    
+    runtimes['get reads'] = trim_runtime(time.time() - before_get_reads)
+    before_find_candidates = time.time()
+
+    # Region is expanded by region_padding number of bases. This functionality
+    # is only needed when phase_reads flag is on.
+    region_padding_percent = self.options.phase_reads_region_padding_pct
+    if self.options.phase_reads and region_padding_percent > 0:
+      contig_dict = ranges.contigs_dict(
+          fasta.IndexedFastaReader(
+              self.options.reference_filename).header.contigs)
+      # When candidate partitioning is used region size is variable. Therefore
+      # we need to calculate the padding for each region.
+      padding_fraction = int(
+          (region.end - region.start) * region_padding_percent / 100)
+      region_expanded = ranges.expand(region, padding_fraction, contig_dict)
+      
+      self.candidates_in_region1(region, region_expanded, unfiltered_candidates)
+      
+  
   def process(self, region):
     """Finds candidates and creates corresponding examples in a region.
 
@@ -1343,12 +1568,14 @@ class RegionProcessor(object):
                 ref_reader=self.ref_reader))
 
       # After any filtering and other changes above, set candidates for sample.
+      #print("Role = ",role)
       candidates_by_sample[role] = candidates
 
       runtimes['make pileup images'] = trim_runtime(time.time() -
                                                     before_make_pileup_images)
     runtimes['num candidates'] = sum(
         [len(x) for x in candidates_by_sample.values()])
+    #print("candidates_by_sample = ", candidates_by_sample)
     return candidates_by_sample, gvcfs_by_sample, runtimes
 
   def region_reads_norealign(
@@ -1504,7 +1731,54 @@ class RegionProcessor(object):
         candidate.variant.start < region.end
     ]
 
-  def candidates_in_region(
+  def candidates_in_region1(
+      self,
+      region: range_pb2.Range,
+      padded_region: Optional[range_pb2.Range] = None,
+      unfiltered_candidates = None
+  ) -> Tuple[Dict[str, Sequence[deepvariant_pb2.DeepVariantCall]], Dict[
+      str, Sequence[variants_pb2.Variant]]]:
+    """Finds candidates in the region using the designated variant caller.
+
+    Args:
+      region: A nucleus.genomics.v1.Range object specifying the region we want
+        to get candidates for.
+      padded_region: A nucleus.genomics.v1.Range object specifying the padded
+        region.
+
+    Returns:
+      A 2-tuple of (candidates, gvcfs).
+      The first value, candidates, is a dict keyed by sample role, where each
+      item is a list of deepvariant_pb2.DeepVariantCalls objects, in
+      coordidate order.
+      The second value, gvcfs, is a dict keyed by sample role, where
+      each item is a list of nucleus.genomics.v1.Variant protos containing gVCF
+      information for all reference sites, if gvcf generation is enabled,
+      otherwise the gvcfs value is [].
+    """
+    print("len(unfiltered_candidates) = ",len(unfiltered_candidates))
+
+    for sample in self.samples: 
+      if self.options.phase_reads:
+        if padded_region is not None:
+          reads_to_phase = list(sample.in_memory_sam_reader.query(padded_region))
+        else:
+          reads_to_phase = list(sample.in_memory_sam_reader.query(region))
+        for read in reads_to_phase:
+          del read.info['HP'].values[:]
+             
+        read_phases = self.direct_phasing_cpp.phase(unfiltered_candidates,reads_to_phase)
+          # Assign phase tag to reads.
+        for read_phase, read in zip(read_phases, reads_to_phase):
+          del read.info['HP'].values[:]
+          if self.options.pic_options.reverse_haplotypes:
+            if read_phase in [1, 2]:
+              read_phase = 1 + (read_phase % 2)
+          read.info['HP'].values.add(int_value=read_phase)
+        reads_to_phase = None
+        
+ 
+  def candidates_in_region0(
       self,
       region: range_pb2.Range,
       padded_region: Optional[range_pb2.Range] = None
@@ -1535,7 +1809,7 @@ class RegionProcessor(object):
     if not main_sample.reads and not gvcf_output_enabled(self.options):
       # If we are generating gVCF output we cannot safely abort early here as
       # we need to return the gVCF records calculated by the caller below.
-      return {}, {}
+      return {}
 
     allele_counters = {}
     candidate_positions = []
@@ -1655,11 +1929,171 @@ class RegionProcessor(object):
                 read_phase = 1 + (read_phase % 2)
             read.info['HP'].values.add(int_value=read_phase)
         reads_to_phase = None
+      filtered_candidates = {}
+      if padded_region is not None:
+         filtered_candidates[role] = self.filter_candidates_by_region(
+            candidates[role], region)
+      
+    return filtered_candidates, gvcfs, candidates
 
+
+
+  def candidates_in_region(
+      self,
+      region: range_pb2.Range,
+      padded_region: Optional[range_pb2.Range] = None
+  ) -> Tuple[Dict[str, Sequence[deepvariant_pb2.DeepVariantCall]], Dict[
+      str, Sequence[variants_pb2.Variant]]]:
+    """Finds candidates in the region using the designated variant caller.
+
+    Args:
+      region: A nucleus.genomics.v1.Range object specifying the region we want
+        to get candidates for.
+      padded_region: A nucleus.genomics.v1.Range object specifying the padded
+        region.
+
+    Returns:
+      A 2-tuple of (candidates, gvcfs).
+      The first value, candidates, is a dict keyed by sample role, where each
+      item is a list of deepvariant_pb2.DeepVariantCalls objects, in
+      coordidate order.
+      The second value, gvcfs, is a dict keyed by sample role, where
+      each item is a list of nucleus.genomics.v1.Variant protos containing gVCF
+      information for all reference sites, if gvcf generation is enabled,
+      otherwise the gvcfs value is [].
+    """
+    for sample in self.samples:
+      sample.reads = sample.in_memory_sam_reader.query(region)
+
+    main_sample = self.samples[self.options.main_sample_index]
+    if not main_sample.reads and not gvcf_output_enabled(self.options):
+      # If we are generating gVCF output we cannot safely abort early here as
+      # we need to return the gVCF records calculated by the caller below.
+      return {}
+
+    allele_counters = {}
+    candidate_positions = []
+    if self.options.allele_counter_options.track_ref_reads:
+      # Calculate potential candidate positions from allele counts.
+      for sample in self.samples:
+        if sample.options.reads_filenames:
+          # Calculate potential candidate positions from allele counts
+          if padded_region is not None:
+            sample.allele_counter = self._make_allele_counter_for_region(
+                padded_region, [])
+          else:
+            sample.allele_counter = self._make_allele_counter_for_region(
+                region, [])
+
+          for read in sample.reads:
+            sample.allele_counter.add(read, sample.options.name)
+        # Reads iterator needs to be reset since it used in the code below.
+        sample.reads = sample.in_memory_sam_reader.query(region)
+      allele_counters = {s.options.name: s.allele_counter for s in self.samples}
+
+    for sample in self.samples:
+      if self.options.allele_counter_options.track_ref_reads:
+        candidate_positions = sample.variant_caller.get_candidate_positions(
+            allele_counters=allele_counters, sample_name=sample.options.name)
+      if sample.options.reads_filenames:
+        if self.options.allele_counter_options.normalize_reads:
+          reads_start = region.start
+          reads_end = region.end
+          for read in sample.reads:
+            read_last_pos = min(
+                self.ref_reader.contig(region.reference_name).n_bases - 1,
+                utils.read_end(read))
+            if read.alignment.position.position < reads_start:
+              reads_start = read.alignment.position.position
+            if read_last_pos > reads_end:
+              reads_end = read_last_pos
+          full_range = range_pb2.Range(
+              reference_name=region.reference_name,
+              start=reads_start,
+              end=reads_end)
+          sample.reads = sample.in_memory_sam_reader.query(region)
+
+          sample.allele_counter = self._make_allele_counter_for_read_overlap_region(
+              region, full_range, candidate_positions)
+        else:
+          if padded_region is not None:
+            sample.allele_counter = self._make_allele_counter_for_region(
+                padded_region, candidate_positions)
+          else:
+            sample.allele_counter = self._make_allele_counter_for_region(
+                region, candidate_positions)
+
+        for read in sample.reads:
+          if self.options.allele_counter_options.normalize_reads:
+            cigar, read_shift = sample.allele_counter.normalize_and_add(
+                read, sample.options.name)
+            if cigar:
+              if read_shift != 0:
+                read.alignment.position.position += read_shift
+              del read.alignment.cigar[:]
+              for el in cigar:
+                read.alignment.cigar.add(
+                    operation=el.operation,
+                    operation_length=el.operation_length)
+          else:
+            sample.allele_counter.add(read, sample.options.name)
+
+        allele_counters[sample.options.name] = sample.allele_counter
+
+    candidates = {}
+    gvcfs = {}
+    left_padding = 0
+    right_padding = 0
+    if padded_region is not None:
+      left_padding = region.start - padded_region.start
+      right_padding = padded_region.end - region.end
+    for sample in self.samples:
+      role = sample.options.role
+      if in_training_mode(
+          self.options) and self.options.sample_role_to_train != role:
+        continue
+      if not sample.options.reads_filenames:
+        continue
+      candidates[role], gvcfs[role] = sample.variant_caller.calls_and_gvcfs(
+          allele_counters=allele_counters,
+          target_sample=sample.options.name,
+          include_gvcfs=gvcf_output_enabled(self.options),
+          include_med_dp=self.options.include_med_dp,
+          left_padding=left_padding,
+          right_padding=right_padding)
+
+      if self.options.phase_reads:
+        if padded_region is not None:
+          reads_to_phase = list(
+              sample.in_memory_sam_reader.query(padded_region))
+        else:
+          reads_to_phase = list(sample.in_memory_sam_reader.query(region))
+        for read in reads_to_phase:
+          # Remove existing values
+          del read.info['HP'].values[:]
+        # Skip phasing if number of candidates is over the phase_max_candidates.
+        if (self.options.phase_max_candidates and
+            len(candidates[role]) > self.options.phase_max_candidates):
+          logging_with_options(
+              self.options, 'Skip phasing: len(candidates[%s]) is %s.' %
+              (role, len(candidates[role])))
+        else:
+          read_phases = self.direct_phasing_cpp.phase(candidates[role],
+                                                      reads_to_phase)
+          # Assign phase tag to reads.
+          for read_phase, read in zip(read_phases, reads_to_phase):
+            # Remove existing values
+            del read.info['HP'].values[:]
+            if self.options.pic_options.reverse_haplotypes:
+              if read_phase in [1, 2]:
+                read_phase = 1 + (read_phase % 2)
+            read.info['HP'].values.add(int_value=read_phase)
+        reads_to_phase = None
+      
       if padded_region is not None:
         candidates[role] = self.filter_candidates_by_region(
             candidates[role], region)
-
+      
     return candidates, gvcfs
 
   def align_to_all_haplotypes(self, variant, reads):
@@ -2050,6 +2484,7 @@ def processing_regions_from_options(options):
                      'resulting in set of empty region to process. This also '
                      'happens if you use "chr20" for a BAM where contig names '
                      'don\'t have "chr"s (or vice versa).')
+
   regions = regions_to_process(
       contigs=contigs,
       partition_size=options.allele_counter_options.partition_size,
@@ -2086,6 +2521,119 @@ def processing_regions_from_options(options):
   return region_list, calling_regions
 
 
+def processing_regions_from_options1(options):
+  """Computes the calling regions from our options.
+
+  This function does all of the work needed to read our input files and region
+  specifications to determine the list of regions we should generate examples
+  over. It also computes the confident regions needed to label variants.
+
+  Args:
+    options: deepvariant.MakeExamplesOptions proto containing information about
+      our input data sources.
+
+  Raises:
+    ValueError: if the regions to call is empty.
+
+  Returns:
+    Two values. The first is a list of nucleus.genomics.v1.Range protos of the
+    regions we should process. The second is a RangeSet containing the calling
+    regions calculated from intersection of input regions, condident regions
+    and regions to exclude.
+  """
+
+  # Load candidate_positions if the flag is set. Partitioning logic will depend
+  # on whether candidate_positions is set.
+  candidate_positions = None
+  mode_candidate_sweep = deepvariant_pb2.MakeExamplesOptions.CANDIDATE_SWEEP
+  main_sample_options = options.sample_options[options.main_sample_index]
+  if (options.mode != mode_candidate_sweep and
+      main_sample_options.candidate_positions):
+    candidate_positions = load_candidate_positions(
+        main_sample_options.candidate_positions)
+
+  ref_contigs = fasta.IndexedFastaReader(
+      options.reference_filename).header.contigs
+
+  # Add in confident regions and vcf_contigs if in training mode.
+  vcf_contigs = None
+  if in_training_mode(options):
+    vcf_contigs = vcf.VcfReader(options.truth_variants_filename).header.contigs
+    if all([x.n_bases == 0 for x in vcf_contigs]):
+      logging.info(
+          '%s header does not contain contig lengths. Will skip contig '
+          'consistency checking for this file.',
+          options.truth_variants_filename)
+      vcf_contigs = None
+
+  main_sample = options.sample_options[options.main_sample_index]
+  all_sam_contigs = [
+      sam.SamReader(reads_file).header.contigs
+      for reads_file in main_sample.reads_filenames
+  ]
+  sam_contigs = common_contigs(only_true(*all_sam_contigs))
+
+  contigs = _ensure_consistent_contigs(ref_contigs, sam_contigs, vcf_contigs,
+                                       options.exclude_contigs,
+                                       options.min_shared_contigs_basepairs)
+  logging_with_options(options,
+                       'Common contigs are %s' % [c.name for c in contigs])
+  calling_regions = build_calling_regions(ref_contigs, options.calling_regions,
+                                          options.exclude_calling_regions)
+  if not calling_regions:
+    raise ValueError('The regions to call is empty. Check your --regions and '
+                     '--exclude_regions flags to make sure they are not '
+                     'resulting in set of empty region to process. This also '
+                     'happens if you use "chr20" for a BAM where contig names '
+                     'don\'t have "chr"s (or vice versa).')
+  regions = regions_to_process1(
+      contigs=contigs,
+      partition_size=options.allele_counter_options.partition_size,
+      calling_regions=calling_regions,
+      task_id=options.task_id,
+      num_shards=options.num_shards,
+      candidates=candidate_positions)
+
+  region_list = list(regions)
+  # When using VcfCandidateImporter, it is safe to skip regions without
+  # candidates as long as gVCF output is not needed. There is a tradeoff
+  # though because it takes time to read the VCF, which is only worth it if
+  # there are enough regions.
+  if (main_sample.proposed_variants_filename and
+      not gvcf_output_enabled(options)):
+    logging_with_options(
+        options, 'Reading VCF to skip processing some regions without '
+        'variants in the --proposed_variants VCF.')
+    before = time.time()
+    variant_positions = fetch_vcf_positions([
+        sample_option.proposed_variants_filename
+        for sample_option in options.sample_options
+    ], contigs, calling_regions)
+    filtered_regions = filter_regions_by_vcf(region_list, variant_positions)
+    time_elapsed = time.time() - before
+    logging_with_options(
+        options, 'Filtering regions took {} seconds and reduced the number of '
+        'regions to process from {} to {} regions containing variants '
+        'from the supplied VCF of proposed variants.'.format(
+            trim_runtime(time_elapsed), len(region_list),
+            len(filtered_regions)))
+    return filtered_regions, None
+
+  return region_list, calling_regions
+
+def processing_regions(options, split_line):
+  #print("Partition_size = ", options.allele_counter_options.partition_size)
+  i = int(split_line[1])
+  
+  regions=[]
+  while i < int(split_line[2]):
+    end = i + options.allele_counter_options.partition_size  
+    region = ranges.make_range(split_line[0], i, end)
+    regions.append(region)
+    i = end
+
+  return regions
+
 def _write_example_and_update_stats(example,
                                     writer,
                                     runtimes,
@@ -2107,6 +2655,7 @@ def _write_example_and_update_stats(example,
 
 def make_examples_runner(options):
   """Runs examples creation stage of deepvariant."""
+  runner1_time=time.time()
   resource_monitor = resources.ResourceMonitor().start()
   before_initializing_inputs = time.time()
 
@@ -2165,7 +2714,13 @@ def make_examples_runner(options):
       'n_examples': 0
   }
   example_shape = None
+  total_time1=time.time()-runner1_time
+  print("Pre runner1:",options.task_id,total_time1)
+  total_time1=0
+  total_time2=0
+
   for region in regions:
+    temp_time=time.time()
 
     if options.mode == mode_candidate_sweep:
       candidates_in_region = list(
@@ -2181,6 +2736,8 @@ def make_examples_runner(options):
 
     (candidates_by_sample, gvcfs_by_sample,
      runtimes) = region_processor.process(region)
+    int_time=time.time()
+    total_time1+=int_time-temp_time
     for sample in region_processor.samples:
       role = sample.options.role
       if role not in candidates_by_sample:
@@ -2216,8 +2773,576 @@ def make_examples_runner(options):
           last_reported or n_stats['n_regions'] == 1):
         last_reported = int(n_stats['n_candidates'] /
                             options.logging_every_n_candidates)
-        logging_with_options(
-            options, '%s candidates (%s examples) [%0.2fs elapsed]' %
+        logging_with_options(options, '%s candidates (%s examples) [%0.2fs elapsed]' % (n_stats['n_candidates'], n_stats['n_examples'],
+             running_timer.Stop()))
+        running_timer = timer.TimerStart()
+    if options.runtime_by_region:
+      # Runtimes are for all samples, so write this only once.
+      writers_dict[options.sample_role_to_train].write_runtime(
+          stats_dict=runtimes)
+    total_time2=time.time()-int_time
+  
+  for writer in writers_dict.values():
+    writer.close_all()
+  if (options.mode == mode_candidate_sweep and candidates_writer):
+    candidates_writer.close()
+
+  # Construct and then write out our MakeExamplesRunInfo proto.
+  if options.run_info_filename:
+    make_examples_stats = deepvariant_pb2.MakeExamplesStats(
+        num_examples=n_stats['n_examples'],
+        num_snps=n_stats['n_snps'],
+        num_indels=n_stats['n_indels'],
+        num_class_0=n_stats['n_class_0'],
+        num_class_1=n_stats['n_class_1'],
+        num_class_2=n_stats['n_class_2'])
+    run_info = deepvariant_pb2.MakeExamplesRunInfo(
+        options=options,
+        resource_metrics=resource_monitor.metrics(),
+        stats=make_examples_stats)
+    if in_training_mode(options):
+      if (region_processor.labeler is not None and
+          region_processor.labeler.metrics is not None):
+        run_info.labeling_metrics.CopyFrom(region_processor.labeler.metrics)
+      else:
+        logging.warning(
+            'Labeling metrics requested but the selected labeling '
+            'algorithm %s does not collect metrics; skipping.',
+            options.labeler_algorithm)
+    logging_with_options(
+        options,
+        'Writing MakeExamplesRunInfo to %s' % options.run_info_filename)
+    write_make_examples_run_info(run_info, path=options.run_info_filename)
+
+  # Write to .example_info file. Here we use the examples_filename as prefix.
+  # If the examples_filename is sharded, we only write to the first shard.
+  # Currently, even in multi-sample scenario, the suffix is not used here
+  # because currently all the multiple-sample output will have the same shape
+  # and list of channels.
+  example_info_filename = dv_utils.get_example_info_json_filename(
+      options.examples_filename, options.task_id)
+  if example_info_filename is not None:
+    logging_with_options(options,
+                         'Writing example info to %s' % example_info_filename)
+    example_channels = region_processor.get_channels()
+    # example_shape was filled in during the loop above.
+    logging.info('example_shape = %s', str(example_shape))
+    logging.info('example_channels = %s', str(example_channels))
+    with epath.Path(example_info_filename).open('w') as fout:
+      json.dump(
+          {
+              'version': dv_vcf_constants.DEEP_VARIANT_VERSION,
+              'shape': example_shape,
+              'channels': example_channels
+          }, fout)
+
+  logging_with_options(options,
+                       'Found %s candidate variants' % n_stats['n_candidates'])
+  logging_with_options(options, 'Created %s examples' % n_stats['n_examples'])
+  print("Total time:",options.task_id,time.time()-before_initializing_inputs)
+  print("Runner1 time:",options.task_id,total_time1)
+  print("Runner2 time:",options.task_id,total_time2)
+
+
+def isOverlap(prev_candidate, candidate):
+  if prev_candidate.variant.reference_name != candidate.variant.reference_name:
+      return False
+  elif int(candidate.variant.start) > int(prev_candidate.variant.end):
+      return False
+  else:
+      return True
+
+def make_examples_runner0(options,flags_obj):
+  
+  intermediate_results_dir=flags_obj.intermediate_results_dir
+  
+  time_runner=time.time()
+  """Runs examples creation stage of deepvariant."""
+  resource_monitor = resources.ResourceMonitor().start()
+  before_initializing_inputs = time.time()
+  
+  #print("Partition_size 0 = ", str(options.allele_counter_options.partition_size))
+  logging_with_options(options, 'Preparing inputs')
+  regions, calling_regions = processing_regions_from_options(options)
+
+  main_sample = options.sample_options[options.main_sample_index]
+  mode_candidate_sweep = deepvariant_pb2.MakeExamplesOptions.CANDIDATE_SWEEP
+  if options.mode == mode_candidate_sweep and main_sample.candidate_positions:
+    _, candidate_positions_filename = sharded_file_utils.resolve_filespecs(
+        options.task_id, main_sample.candidate_positions)
+    candidates_writer = epath.Path(candidate_positions_filename).open('wb')
+
+  # Create a processor to create candidates and examples for each region.
+  region_processor = RegionProcessor(options)
+  region_processor.initialize()
+
+  if options.candidates_filename:
+    logging_with_options(
+        options, 'Writing candidates to %s' % options.candidates_filename)
+  if options.gvcf_filename:
+    logging_with_options(options,
+                         'Writing gvcf records to %s' % options.gvcf_filename)
+
+  last_reported = 0
+
+  writers_dict = {}
+  if in_training_mode(options) or len(options.sample_options) == 1:
+    writers_dict[options.sample_role_to_train] = OutputsWriter(
+        options, suffix=None)
+  else:
+    for sample in region_processor.samples:
+      if sample.sam_readers is not None:
+        writers_dict[sample.options.role] = OutputsWriter(
+            options, suffix=sample.options.role)
+
+  logging_with_options(
+      options, 'Writing examples to %s' %
+      ', '.join([writer.examples_filename for writer in writers_dict.values()]))
+
+  logging_with_options(
+      options, 'Overhead for preparing inputs: %d seconds' %
+      (time.time() - before_initializing_inputs))
+
+  running_timer = timer.TimerStart()
+  # Ideally this would use dv_constants.NUM_CLASSES, which requires generalizing
+  # deepvariant_pb2.MakeExamplesStats to use an array for the class counts.
+  n_stats = {
+      'n_class_0': 0,
+      'n_class_1': 0,
+      'n_class_2': 0,
+      'n_snps': 0,
+      'n_indels': 0,
+      'n_regions': 0,
+      'n_candidates': 0,
+      'n_examples': 0
+  }
+  example_shape = None
+  counter=0
+  candidate_counter=[]
+  candidates_by_sample_list=[]
+  gvcfs_by_sample_list=[]
+  runtimes_list=[]
+
+  #f = open(intermediate_results_dir+'/'+str(options.task_id)+'region.txt', "w")
+  for region in regions:
+    #print("region:",region)
+    #f = open(intermediate_results_dir+'/'+'_region_'+str(region.reference)+str(region.start)+'.txt', "w")  
+    #print("region:",region)
+    #print("region0",str(region).split())
+
+    if options.mode == mode_candidate_sweep:
+      candidates_in_region = list(
+          region_processor.find_candidate_positions(region))
+      candidates_writer.write(
+          np.array(candidates_in_region, dtype=np.int32).tobytes())
+      # Here we mark the end of the calling region
+      for cr in calling_regions:
+        if cr.reference_name == region.reference_name and cr.end == region.end:
+          candidates_writer.write(
+              np.array([END_OF_REGION], dtype=np.int32).tobytes())
+      continue
+
+    (filtered_candidates_by_sample, gvcfs_by_sample,
+     runtimes, unfiltered_candidates_by_sample) = region_processor.process0(region)
+   for sample in region_processor.samples:
+      role = sample.options.role
+      if role not in filtered_candidates_by_sample:
+        continue
+      
+      regionlist=str(region).split()
+      if (len(regionlist)<6):
+        temp1 = regionlist[2]
+        temp2 = regionlist[3]
+        regionlist[2] = "start:"
+        regionlist[3] = "0"
+        regionlist.append(temp1)
+        regionlist.append(temp2)
+      #print(regionlist)
+      regionlist.append(str(len(filtered_candidates_by_sample[role])))
+      reference_name = regionlist[1].replace('"',"")
+
+      writer = writers_dict[role]
+      path1 = intermediate_results_dir+"/candidate_record_"+reference_name+"_"+regionlist[3]+".gz"
+      writer1 = tfrecord.Writer(path1)
+
+      path2 = intermediate_results_dir+"/unfiltered_candidate_record_"+reference_name+"_"+regionlist[3]+".gz"
+      writer2 = tfrecord.Writer(path2)
+
+      candidate_counter1 = 0
+      regs = []
+      prev_flag = False
+      for candidate in filtered_candidates_by_sample[role]:
+        #logging_with_options(options, 'Candidate = %s' % candidate)  
+        cur_flag = False
+        if candidate_counter1 > 0:
+          cur_flag = isOverlap(prev_candidate, candidate)
+          if cur_flag == True:
+            if prev_flag==True:         
+              reg1=str(prev_candidate_counter)
+            else:
+              reg1=str(candidate_counter1-1)
+              prev_candidate_counter = candidate_counter1 - 1
+            reg2=str(candidate_counter1)
+        
+          else:
+              if prev_flag == True:
+                regs.append(reg1+','+reg2)
+        
+
+        #logging_with_options(options, 'Candidate.variant.start = %s' % candidate.variant.start)
+        if int(candidate.variant.end) > int(region.end):
+            print("Overlap among regions!!!")
+            #sys.exit(0)
+        writer1.write(candidate)
+        candidate_counter1 = candidate_counter1 + 1
+        prev_candidate = candidate
+        prev_flag = cur_flag
+      writer1.close()
+
+      for candidate in unfiltered_candidates_by_sample[role]:
+        writer2.write(candidate)
+      writer2.close()
+       
+      
+      for reg in regs:
+        regionlist.append(reg)
+      tab_deliminated_string = '\t'.join(regionlist)
+      f = open(intermediate_results_dir+"/region_"+reference_name+"_"+regionlist[3]+".txt", "w")
+      f.write(tab_deliminated_string+"\n")
+      f.close()
+
+    
+   #with open('region_processor.pkl', 'wb') as output:
+    #    pickle.dump(region_processor, output, pickle.HIGHEST_PROTOCOL)
+  print("Time1:",options.task_id,time.time()-time_runner)
+
+
+def read_candidate_files(candidate_file_list, counter_file_list, offset_list, max_candidates_to_read):
+  number_of_candidates = 1
+  candidates_by_region = []
+  
+  candidate_file_index = 0
+  reg_lengths = []
+  region_index = 0
+  regions = []
+
+  for candidate_file, counter_file in zip(candidate_file_list, counter_file_list):
+    reader = tfrecord.Reader(candidate_file, proto=deepvariant_pb2.DeepVariantCall, compression_type=None)
+    with open(counter_file) as fp:
+      lines = fp.readlines()
+      sum_counts = 0
+      found = 0
+      for line in lines:
+        split_line = line.split()
+        if found == 0:
+          prev_sum_counts = sum_counts
+          sum_counts = sum_counts + int(split_line[6])
+          if int(offset_list[candidate_file_index]) < sum_counts:
+            reg_length = int(split_line[6])
+            if int(offset_list[candidate_file_index]) > 0:
+              reg_length = reg_length - (int(offset_list[candidate_file_index]) - prev_sum_counts)
+            reg_lengths.append(reg_length)
+            found = 1
+            reference_name = split_line[1].replace('"',"")
+            region = ranges.make_range(reference_name, int(split_line[3]), int(split_line[5]) )
+            regions.append(region)
+        else:
+          reg_lengths.append(int(split_line[6]))
+          reference_name = split_line[1].replace('"',"")
+          region = ranges.make_range(reference_name, int(split_line[3]), int(split_line[5]) )
+          regions.append(region)
+
+    #print("reg_lengths: ",reg_lengths) 
+     
+    record_index = 0
+    candidates_in_region = 1
+    templist = []
+    for record in reader.iterate():
+        if record_index >= int(offset_list[candidate_file_index]):   
+          if number_of_candidates > int(max_candidates_to_read):
+            break          
+          if candidates_in_region > reg_lengths[region_index]:
+            candidates_in_region = 1
+            candidates_by_region.append(templist)
+            #print("region = ",region_index ,"Len(candidates_by_region) =%d ", len(candidates_by_region[region_index]))
+            region_index = region_index + 1
+            templist = []
+          templist.append(record)
+          number_of_candidates = number_of_candidates + 1
+          candidates_in_region = candidates_in_region + 1
+          #print("region =", region_index, "number_of_candidates= ", number_of_candidates)
+          #print("region = ", region_index, "candidates_in_region = ", candidates_in_region)
+
+        record_index = record_index + 1
+        
+    candidates_by_region.append(templist)
+    region_index = region_index + 1
+    candidate_file_index = candidate_file_index + 1
+  
+  #candidates_by_region.append(templist)
+  #print("Len(candidates_by_region) = ", len(candidates_by_region[region_index]))
+  #print("number_ofcandidates ", number_of_candidates)
+  #print("candidates_in_region = ", candidates_in_region)
+  #print("record_index = ", record_index)
+
+  final_regions = []
+  for i in range(0, len(candidates_by_region)):
+      final_regions.append(regions[i])
+  return final_regions, candidates_by_region
+
+
+def read_candidate_files1(candidate_file_list, counter_file_list, offset_list, max_candidates_to_read):
+  number_of_candidates = 1
+  candidates_by_region = []
+  
+  candidate_file_index = 0
+  regions = []
+  
+  for candidate_file, counter_file in zip(candidate_file_list, counter_file_list):
+    reader = tfrecord.Reader(candidate_file, proto=deepvariant_pb2.DeepVariantCall, compression_type=None)
+    with open(counter_file) as fp:
+      lines = fp.readlines()
+      for line in lines:
+        split_line = line.split()
+        reference_name = split_line[1].replace('"',"")
+        region = ranges.make_range(reference_name, int(split_line[3]), int(split_line[5]) )
+        regions.append(region)
+
+
+    record_index = 0
+    templist = []
+    for record in reader.iterate():
+        if record_index >= int(offset_list[candidate_file_index]):   
+          if number_of_candidates > int(max_candidates_to_read):
+            break          
+          templist.append(record)
+          number_of_candidates = number_of_candidates + 1
+          
+        record_index = record_index + 1
+        
+    candidates_by_region.append(templist)
+    candidate_file_index = candidate_file_index + 1
+  
+  unfiltered_candidates_by_region = []
+  for candidate_file in candidate_file_list:
+      unfiltered_candidate_file = candidate_file.replace("candidate", "unfiltered_candidate") 
+      reader = tfrecord.Reader(unfiltered_candidate_file, proto=deepvariant_pb2.DeepVariantCall, compression_type=None)
+      
+      templist = []
+      for record in reader.iterate():
+          templist.append(record)
+      unfiltered_candidates_by_region.append(templist)    
+
+  return regions, candidates_by_region, unfiltered_candidates_by_region
+
+
+
+def make_examples_runner1(options, flags_obj):
+  time_runner=time.time()
+  print("Candidate File:",flags_obj.candidate_file_list)
+  print("Counter File:",flags_obj.counter_file_list)
+  print("Offset File",flags_obj.offset_list)
+  print("Max Candidates:",flags_obj.max_candidates)
+  print("intermediate:",flags_obj.intermediate_results_dir)
+  
+  candidate_file_list_file = flags_obj.candidate_file_list
+  counter_file_list_file = flags_obj.counter_file_list
+  offset_list_file = flags_obj.offset_list
+  max_candidates_file = flags_obj.max_candidates 
+  intermediate_results_dir=flags_obj.intermediate_results_dir
+ 
+  
+  """Runs examples creation stage of deepvariant."""
+  resource_monitor = resources.ResourceMonitor().start()
+  before_initializing_inputs = time.time()
+
+  logging_with_options(options, 'Preparing inputs')
+  #logging_with_options(options, 'Partition_size = %d '% options.allele_counter_options.partition_size) 
+  #with open("/output/split_me/region_list") as fp:
+  #    for i, line in enumerate(fp):
+  #      if i == options.task_id:
+  #        logging_with_options(options, 'Line = %s' % line)  
+  #        split_line = line.split() 
+          #print("split_line[0]", split_line[0])
+          #print("split_line[1]", split_line[1])
+          #print("split_line[2]", split_line[2])
+          #region_from_file = [split_line[0] + ':' + split_line[1] + '-' + split_line[2]]
+          #region_from_file = list(region_from_file)
+          #print("region_from_file =", region_from_file)
+
+  #regions, calling_regions = processing_regions_from_options(options)
+  #all_regions = split_line
+
+  #regions = processing_regions(options, split_line)
+
+  #logging_with_options(options, 'Regions: %s' % regions)
+
+  #regions, calling_regions = processing_regions_from_options(options)
+
+  main_sample = options.sample_options[options.main_sample_index]
+  mode_candidate_sweep = deepvariant_pb2.MakeExamplesOptions.CANDIDATE_SWEEP
+  if options.mode == mode_candidate_sweep and main_sample.candidate_positions:
+    _, candidate_positions_filename = sharded_file_utils.resolve_filespecs(
+        options.task_id, main_sample.candidate_positions)
+    candidates_writer = epath.Path(candidate_positions_filename).open('wb')
+
+  # Create a processor to create candidates and examples for each region.
+  region_processor = RegionProcessor(options) #reg
+  region_processor.initialize()
+
+  if options.candidates_filename:
+    logging_with_options(
+        options, 'Writing candidates to %s' % options.candidates_filename)
+  if options.gvcf_filename:
+    logging_with_options(options,
+                         'Writing gvcf records to %s' % options.gvcf_filename)
+
+  last_reported = 0
+
+  writers_dict = {}
+  if in_training_mode(options) or len(options.sample_options) == 1:
+    writers_dict[options.sample_role_to_train] = OutputsWriter(
+        options, suffix=None)
+  else:
+    for sample in region_processor.samples:
+      if sample.sam_readers is not None:
+        writers_dict[sample.options.role] = OutputsWriter(
+            options, suffix=sample.options.role)
+
+  logging_with_options(
+      options, 'Writing examples to %s' %
+      ', '.join([writer.examples_filename for writer in writers_dict.values()]))
+
+  logging_with_options(
+      options, 'Overhead for preparing inputs: %d seconds' %
+      (time.time() - before_initializing_inputs))
+
+  running_timer = timer.TimerStart()
+  # Ideally this would use dv_constants.NUM_CLASSES, which requires generalizing
+  # deepvariant_pb2.MakeExamplesStats to use an array for the class counts.
+  n_stats = {
+      'n_class_0': 0,
+      'n_class_1': 0,
+      'n_class_2': 0,
+      'n_snps': 0,
+      'n_indels': 0,
+      'n_regions': 0,
+      'n_candidates': 0,
+      'n_examples': 0
+  }
+  example_shape = None
+  
+  with open(intermediate_results_dir + '/'+ candidate_file_list_file) as fp:
+    for i, line in enumerate(fp):
+      if i == options.task_id:
+        logging_with_options(options, 'Line = %s' % line)
+        split_line = line.split()
+  
+  candidate_file_list = split_line
+  
+  logging_with_options(options, 'Candidate_files = %s' % candidate_file_list)
+
+  with open(intermediate_results_dir + '/'+ offset_list_file) as fp:
+    for i, line in enumerate(fp):
+      if i == options.task_id:
+        logging_with_options(options, 'Line = %s' % line)
+        split_line = line.split()
+
+  offset_list = split_line
+
+  logging_with_options(options, 'Offset_list = %s' % offset_list)
+
+  with open(intermediate_results_dir + '/'+ counter_file_list_file) as fp:
+    for i, line in enumerate(fp):
+      if i == options.task_id:
+        logging_with_options(options, 'Line = %s' % line)
+        split_line = line.split()
+
+  counter_file_list = split_line
+
+  logging_with_options(options, 'Counter_file_list = %s' % counter_file_list)
+
+  #with open(intermediate_results_dir + '/' + max_candidates_file) as fp:
+  #  max_candidates_to_read = fp.read()
+
+  #logging_with_options(options, 'max_candidates_to_read = %s' % max_candidates_to_read)
+  
+  with open(intermediate_results_dir + '/'+ max_candidates_file) as fp:
+    for i, line in enumerate(fp):
+      if i == options.task_id:
+        logging_with_options(options, 'Line = %s' % line)
+        break
+  max_candidates_to_read=line
+  logging_with_options(options, 'max_candidates_to_read = %s' % max_candidates_to_read)
+  regions, candidates_by_region, unfiltered_candidates_by_region = read_candidate_files1(candidate_file_list, counter_file_list, offset_list, max_candidates_to_read)
+  
+  logging_with_options(options, 'len(Regions): %d' % len(regions))
+  i = 0
+  for region in regions:
+      logging_with_options(options, 'len(candidate_by_region [%d]) = %d' % (i, len(candidates_by_region[i])))
+      i = i+1
+  region_index = 0
+  
+  for region in regions:
+
+    if options.mode == mode_candidate_sweep:
+      candidates_in_region = list(
+          region_processor.find_candidate_positions(region))
+      candidates_writer.write(
+          np.array(candidates_in_region, dtype=np.int32).tobytes())
+      # Here we mark the end of the calling region
+      for cr in calling_regions:
+        if cr.reference_name == region.reference_name and cr.end == region.end:
+          candidates_writer.write(
+              np.array([END_OF_REGION], dtype=np.int32).tobytes())
+      continue
+      
+    candidates_by_sample=candidates_by_region[region_index]
+    unfiltered_candidates_by_sample = unfiltered_candidates_by_region[region_index]
+    region_index = region_index + 1
+
+    t0=time.time()
+    region_processor.process1(region, unfiltered_candidates_by_sample)
+    print("re-run:",time.time()-t0)
+
+    runtimes = {}
+    for sample in region_processor.samples:
+      role = sample.options.role
+      #if role not in candidates_by_sample:
+      #  continue
+      writer = writers_dict[role]
+      region_example_shape = region_processor.writes_examples_in_region(
+          candidates_by_sample, region, sample.options.order, writer,
+          n_stats, runtimes)
+      if example_shape is None and region_example_shape is not None:
+        example_shape = region_example_shape
+      #gvcfs = gvcfs_by_sample[role]
+
+      n_stats['n_candidates'] += len(candidates_by_sample)
+      n_stats['n_regions'] += 1
+
+      before_write_outputs = time.time()
+      #writer.write_candidates(*candidates_by_sample[role])
+      
+
+      # If we have any gvcf records, write them out. This also serves to
+      # protect us from trying to write to the gvcfs output of writer when gvcf
+      # generation is turned off. In that case, gvcfs will always be empty and
+      # we'll never execute the write.
+      #if gvcfs:
+      #  writer.write_gvcfs(*gvcfs)
+
+      if options.runtime_by_region:
+        runtimes['write outputs'] = runtimes.get('write outputs', 0) + (
+            trim_runtime(time.time() - before_write_outputs))
+        runtimes['region'] = ranges.to_literal(region)
+
+      # Output timing for every N candidates.
+      if (int(n_stats['n_candidates'] / options.logging_every_n_candidates) >
+          last_reported or n_stats['n_regions'] == 1):
+        last_reported = int(n_stats['n_candidates'] /
+                            options.logging_every_n_candidates)
+        logging_with_options(options, '%s candidates (%s examples) [%0.2fs elapsed]' %
             (n_stats['n_candidates'], n_stats['n_examples'],
              running_timer.Stop()))
         running_timer = timer.TimerStart()
@@ -2225,6 +3350,8 @@ def make_examples_runner(options):
       # Runtimes are for all samples, so write this only once.
       writers_dict[options.sample_role_to_train].write_runtime(
           stats_dict=runtimes)
+
+    #region_index = region_index+1
 
   for writer in writers_dict.values():
     writer.close_all()
@@ -2283,3 +3410,6 @@ def make_examples_runner(options):
   logging_with_options(options,
                        'Found %s candidate variants' % n_stats['n_candidates'])
   logging_with_options(options, 'Created %s examples' % n_stats['n_examples'])
+  #print("runner1:",time.time()-t0)
+  print("Time2:",options.task_id,time.time()-time_runner)
+  

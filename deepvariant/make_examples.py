@@ -80,8 +80,16 @@ PROPOSED_VARIANTS_ = flags.DEFINE_string(
 CANDIDATE_POSITIONS_ = flags.DEFINE_string(
     'candidate_positions', None,
     'Path to the binary file containing candidate positions.')
-
-
+MAKE_EXAMPLES1_=flags.DEFINE_boolean('make_examples_part1',False, 'If True, run optimized version of make examples.')
+MAKE_EXAMPLES2_=flags.DEFINE_boolean('make_examples_part2',False, 'If True, run optimized version of make examples.')
+_CANDIDATE_FILE_LIST = flags.DEFINE_string(
+            'candidate_file_list', None,'path of candidate file list.')
+_COUNTER_FILE_LIST = flags.DEFINE_string(
+                    'counter_file_list', None,'path of counter file list.')
+_OFFSET_LIST = flags.DEFINE_string(
+                    'offset_list', None,'path of offset list.')
+_MAX_CANDIDATES = flags.DEFINE_string('max_candidates', None,'path of max candidate file.')
+_INTERMEDIATE_RESULTS_DIR=flags.DEFINE_string('intermediate_results_dir', None,'path of intermediate results directory.')
 def one_sample_from_flags(add_flags=True, flags_obj=None):
   """Collect sample-related options into a list of samples."""
   # Sample-specific options.
@@ -132,7 +140,6 @@ def default_options(add_flags=True, flags_obj=None):
 
   samples_in_order, sample_role_to_train = one_sample_from_flags(
       add_flags=add_flags, flags_obj=flags_obj)
-
   options = make_examples_options.shared_flags_to_options(
       add_flags=add_flags,
       flags_obj=flags_obj,
@@ -181,9 +188,14 @@ def main(argv=()):
     # Set up options; may do I/O.
     options = default_options(add_flags=True, flags_obj=FLAGS)
     check_options_are_valid(options)
-
-    # Run!
-    make_examples_core.make_examples_runner(options)
+    if FLAGS.make_examples_part1 or FLAGS.make_examples_part2:
+        # Run!
+        if FLAGS.make_examples_part1:
+            make_examples_core.make_examples_runner0(options,flags_obj=FLAGS)
+        if FLAGS.make_examples_part2:
+            make_examples_core.make_examples_runner1(options,flags_obj=FLAGS)
+    else:
+        make_examples_core.make_examples_runner(options)
 
 
 if __name__ == '__main__':

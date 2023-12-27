@@ -150,6 +150,15 @@ MODEL_TYPE_MAP = {
     'HYBRID_PACBIO_ILLUMINA': '/opt/models/hybrid_pacbio_illumina/model.ckpt',
 }
 
+_MAKE_EXAMPLES_1 = flags.DEFINE_boolean(
+            'make_examples_1', None, 'Optional. If True, corresponding flags runs first part of make examples')
+_MAKE_EXAMPLES_2 = flags.
+            'make_examples_2', None, 'Optional. If True, corresponding flags runs second part of make examples')
+_CANDIDATE_FILE_LIST =  flags.DEFINE_string('candidate_file_list', None, 'File Path for candidate file list.')
+_COUNTER_FILE_LIST =  flags.DEFINE_string('counter_file_list', None, 'File Path for counter file list.')
+_OFFSET_LIST =  flags.DEFINE_string('offset_list', None, 'File Path for offset list.')
+_MAX_CANDIDATES =  flags.DEFINE_string('max_candidates', None, 'File Path for maximum candidate.')
+
 # Current release version of DeepVariant.
 # Should be the same in dv_vcf_constants.py.
 DEEP_VARIANT_VERSION = '1.5.0'
@@ -352,8 +361,6 @@ def parallel_postprocess_variants_command(ref,
     logfile = '{}/postprocess_variants.log'.format(_LOGGING_DIR.value)
   return (' '.join(command), logfile)
 
-
-#
 def concat_vcf(outfile):
   """Returns a outfile with concatenated vcf output"""
   command = [
@@ -368,7 +375,7 @@ def concat_vcf(outfile):
   if _LOGGING_DIR.value:
     logfile = '{}/vcf_merge.log'.format(_LOGGING_DIR.value)
   return (' '.join(command), logfile)
-#---------
+
 
 def postprocess_variants_command(ref,
                                  infile,
@@ -488,7 +495,10 @@ def create_all_commands_and_logfiles(intermediate_results_dir):
 
   examples = os.path.join(
       intermediate_results_dir,
-      'make_examples.tfrecord@{}.gz'.format(_NUM_SHARDS.value))
+      'make_examples.tfrecord@{}.gz'.format(_NUM_SHARDS.value)).
+  candidates= os.path.join(
+      intermediate_results_dir,
+      'candidates.tfrecord@{}.gz'.format(_NUM_SHARDS.value))
 
   if _LOGGING_DIR.value and _RUNTIME_REPORT.value:
     runtime_directory = os.path.join(_LOGGING_DIR.value,
@@ -503,8 +513,43 @@ def create_all_commands_and_logfiles(intermediate_results_dir):
         'make_examples_runtime@{}.tsv'.format(_NUM_SHARDS.value))
   else:
     runtime_by_region_path = None
-
-  commands.append(
+  if _MAKE_EXAMPLES_1.value: 
+    commands.append(
+      make_examples_command(
+          ref=_REF.value,
+          reads=_READS.value,
+          examples=examples,
+          runtime_by_region_path=runtime_by_region_path,
+          extra_args=_MAKE_EXAMPLES_EXTRA_ARGS.value,
+          # kwargs:
+          gvcf=nonvariant_site_tfrecord_path,
+          regions=_REGIONS.value,
+          sample_name=_SAMPLE_NAME.value,
+	  candidates=candidates,
+	  make_examples_part1=_MAKE_EXAMPLES_1.value,
+          intermediate_results_dir=_INTERMEDIATE_RESULTS_DIR.value))
+    return commands
+  if _MAKE_EXAMPLES_2.value:
+    commands.append(
+      make_examples_command(
+          ref=_REF.value,
+          reads=_READS.value,
+          examples=examples,
+          runtime_by_region_path=runtime_by_region_path,
+          extra_args=_MAKE_EXAMPLES_EXTRA_ARGS.value,
+          # kwargs:
+          gvcf=nonvariant_site_tfrecord_path,
+          regions=_REGIONS.value,
+          sample_name=_SAMPLE_NAME.value,
+	  make_examples_part2=_MAKE_EXAMPLES_2.value,
+          candidate_file_list=_CANDIDATE_FILE_LIST.value,
+          counter_file_list=_COUNTER_FILE_LIST.value,
+          offset_list=_OFFSET_LIST.value,
+          max_candidates=_MAX_CANDIDATES.value,
+          intermediate_results_dir=_INTERMEDIATE_RESULTS_DIR.value
+          ))
+  else:
+    commands.append(
       make_examples_command(
           ref=_REF.value,
           reads=_READS.value,
@@ -515,7 +560,7 @@ def create_all_commands_and_logfiles(intermediate_results_dir):
           gvcf=nonvariant_site_tfrecord_path,
           regions=_REGIONS.value,
           sample_name=_SAMPLE_NAME.value))
-
+  
   # call_variants
   call_variants_output = os.path.join(intermediate_results_dir,
                                       'call_variants_output.tfrecord.gz')
