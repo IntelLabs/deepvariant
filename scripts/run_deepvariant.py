@@ -151,9 +151,8 @@ MODEL_TYPE_MAP = {
 }
 
 _MAKE_EXAMPLES_1 = flags.DEFINE_boolean(
-            'make_examples_1', None, 'Optional. If True, corresponding flags runs first part of make examples')
-_MAKE_EXAMPLES_2 = flags.
-            'make_examples_2', None, 'Optional. If True, corresponding flags runs second part of make examples')
+        'make_examples_1', None, 'Optional. If True, corresponding flags runs first part of make examples')
+_MAKE_EXAMPLES_2 = flags.DEFINE_boolean('make_examples_2', None, 'Optional. If True, corresponding flags runs second part of make examples')
 _CANDIDATE_FILE_LIST =  flags.DEFINE_string('candidate_file_list', None, 'File Path for candidate file list.')
 _COUNTER_FILE_LIST =  flags.DEFINE_string('counter_file_list', None, 'File Path for counter file list.')
 _OFFSET_LIST =  flags.DEFINE_string('offset_list', None, 'File Path for offset list.')
@@ -495,7 +494,7 @@ def create_all_commands_and_logfiles(intermediate_results_dir):
 
   examples = os.path.join(
       intermediate_results_dir,
-      'make_examples.tfrecord@{}.gz'.format(_NUM_SHARDS.value)).
+      'make_examples.tfrecord@{}.gz'.format(_NUM_SHARDS.value))
   candidates= os.path.join(
       intermediate_results_dir,
       'candidates.tfrecord@{}.gz'.format(_NUM_SHARDS.value))

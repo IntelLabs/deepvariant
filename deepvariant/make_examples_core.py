@@ -1407,7 +1407,7 @@ class RegionProcessor(object):
     runtimes['num candidates'] = sum(
         [len(x) for x in filtered_candidates_by_sample.values()])
     #print("candidates_by_sample = ", candidates_by_sample)
-   return filtered_candidates_by_sample, gvcfs_by_sample, runtimes, unfiltered_candidates_by_sample
+    return filtered_candidates_by_sample, gvcfs_by_sample, runtimes, unfiltered_candidates_by_sample
 
 
   def process1(self, region, unfiltered_candidates):
@@ -2944,7 +2944,7 @@ def make_examples_runner0(options,flags_obj):
 
     (filtered_candidates_by_sample, gvcfs_by_sample,
      runtimes, unfiltered_candidates_by_sample) = region_processor.process0(region)
-   for sample in region_processor.samples:
+    for sample in region_processor.samples:
       role = sample.options.role
       if role not in filtered_candidates_by_sample:
         continue
