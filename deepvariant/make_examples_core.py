@@ -1476,7 +1476,8 @@ class RegionProcessor(object):
       region_expanded = ranges.expand(region, padding_fraction, contig_dict)
       
       self.candidates_in_region1(region, region_expanded, unfiltered_candidates)
-      
+    else:
+      self.candidates_in_region1(region)   
   
   def process(self, region):
     """Finds candidates and creates corresponding examples in a region.
@@ -1766,15 +1767,20 @@ class RegionProcessor(object):
           reads_to_phase = list(sample.in_memory_sam_reader.query(region))
         for read in reads_to_phase:
           del read.info['HP'].values[:]
-             
-        read_phases = self.direct_phasing_cpp.phase(unfiltered_candidates,reads_to_phase)
+        if (self.options.phase_max_candidates and
+            len(unfiltered_candidates) > self.options.phase_max_candidates):
+          logging_with_options(
+              self.options, 'Skip phasing: len(candidates) is %s.' %
+              (len(unfiltered_candidates)))
+        else:
+          read_phases= self.direct_phasing_cpp.phase(unfiltered_candidates,reads_to_phase)
           # Assign phase tag to reads.
-        for read_phase, read in zip(read_phases, reads_to_phase):
-          del read.info['HP'].values[:]
-          if self.options.pic_options.reverse_haplotypes:
-            if read_phase in [1, 2]:
-              read_phase = 1 + (read_phase % 2)
-          read.info['HP'].values.add(int_value=read_phase)
+          for read_phase, read in zip(read_phases, reads_to_phase):
+            del read.info['HP'].values[:]
+            if self.options.pic_options.reverse_haplotypes:
+              if read_phase in [1, 2]:
+                read_phase = 1 + (read_phase % 2)
+            read.info['HP'].values.add(int_value=read_phase)
         reads_to_phase = None
         
  
@@ -3303,6 +3309,7 @@ def make_examples_runner1(options, flags_obj):
 
     t0=time.time()
     region_processor.process1(region, unfiltered_candidates_by_sample)
+    #region_processor.process(region)
     print("re-run:",time.time()-t0)
 
     runtimes = {}
